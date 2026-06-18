@@ -1,24 +1,3 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>雲山仙境 · 신선이 머무는 곳</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+KR:wght@300;500&display=swap" rel="stylesheet" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
-<style>
-  html, body { margin:0; padding:0; height:100%; background:#d6c9ae; overflow:hidden; }
-  .font-preload { position:absolute; left:-9999px; visibility:hidden; }
-  .ms { font-family:'Ma Shan Zheng'; } .ns { font-family:'Noto Serif KR'; }
-  canvas { display:block; }
-</style>
-</head>
-<body>
-  <span class="font-preload ms">雲山鶴影仙桃</span>
-  <span class="font-preload ns">구름 산 학 신선</span>
-<script>
 /* ============================================================================
    雲山仙境 — 신선이 머무는 곳  (정교·화려 버전)
    p5.js 수묵 산수화 + Claude API(claude-sonnet-4-6) 즉석 한시
@@ -26,6 +5,10 @@
    · 위아래 드래그 : 새벽—한낮—황혼 시간 이동(해의 호·색·반영 변화)
    · 가볍게 클릭(탭) : 신선이 풍경을 보고 한시 한 수를 글자 하나씩 써내려감
    ============================================================================ */
+
+// 자체 서버리스 프록시를 쓰려면 이 한 줄만 교체하세요.
+// (예: 'https://your-worker.workers.dev')  ── proxy/cloudflare-worker.js 참고
+const API_ENDPOINT = 'https://api.anthropic.com/v1/messages';
 
 // ── 시간대별 색 키프레임 (새벽 / 한낮 / 황혼) ───────────────────────────
 const KF = [
@@ -706,7 +689,7 @@ async function summonVerse(){
 
   let got=null;
   try{
-    const res=await fetch('https://api.anthropic.com/v1/messages',{
+    const res=await fetch(API_ENDPOINT,{
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:1000,
         system:sys, messages:[{role:'user',content:usr}] }),
@@ -745,6 +728,3 @@ function rgba(c,a){ return `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`; }
 function rgbaArr(c,a){ return color(c[0],c[1],c[2],a*255); }
 function shade(c,d){ return [constrain(c[0]+d,0,255),constrain(c[1]+d,0,255),constrain(c[2]+d,0,255)]; }
 function lerpC(a,b,f){ return [lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f)]; }
-</script>
-</body>
-</html>
