@@ -1,1 +1,16 @@
 
+/* 雲山仙境 — 전역 스타일 */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #d6c9ae;   /* 폰트/캔버스 로드 전 비단빛 바탕 */
+  overflow: hidden;
+}
+
+/* 폰트가 캔버스에 그려지기 전에 미리 로드되도록 하는 숨김 트리거 */
+.font-preload { position: absolute; left: -9999px; visibility: hidden; }
+.ms { font-family: 'Ma Shan Zheng'; }
+.ns { font-family: 'Noto Serif KR'; }
+
+canvas { display: block; }
