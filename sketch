@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>雲山仙境 · 신선이 머무는 곳</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+KR:wght@300;500&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#d6c9ae; overflow:hidden; }
+  .font-preload { position:absolute; left:-9999px; visibility:hidden; }
+  .ms { font-family:'Ma Shan Zheng'; } .ns { font-family:'Noto Serif KR'; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+  <span class="font-preload ms">雲山鶴影仙桃</span>
+  <span class="font-preload ns">구름 산 학 신선</span>
+<script>
+/* ============================================================================
+   雲山仙境 — 신선이 머무는 곳  (정교·화려 버전)
+   p5.js 수묵 산수화 + Claude API(claude-sonnet-4-6) 즉석 한시
+   · 마우스 이동 : 산 시차 · 운무가 흩어짐 · 도화 꽃잎이 바람따라 · 햇무리 호흡
+   · 위아래 드래그 : 새벽—한낮—황혼 시간 이동(해의 호·색·반영 변화)
+   · 가볍게 클릭(탭) : 신선이 풍경을 보고 한시 한 수를 글자 하나씩 써내려감
+   ============================================================================ */
+
+// ── 시간대별 색 키프레임 (새벽 / 한낮 / 황혼) ───────────────────────────
+const KF = [
+  { // 0 새벽
+    skyTop:[238,224,216], skyBot:[223,198,184],
+    sun:[255,231,210],    glow:[251,212,186],
+    mist:[241,229,223],   water:[206,196,186], gold:0.45,
+  },
+  { // 1 한낮
+    skyTop:[232,228,215], skyBot:[212,203,182],
+    sun:[251,247,230],    glow:[247,240,218],
+    mist:[244,239,225],   water:[200,201,192], gold:0.22,
+  },
+  { // 2 황혼
+    skyTop:[242,216,188], skyBot:[205,168,138],
+    sun:[255,225,176],    glow:[251,197,150],
+    mist:[239,223,207],   water:[196,170,142], gold:0.7,
+  },
+];
+const INK = [ [186,190,191],[156,162,166],[120,129,134],[86,95,100],[54,63,68] ]; // 遠→近
+const INK_DEEP = [34,39,43];
+const VERMILION = [201,66,48];
+const BLOSSOM   = [231,201,196]; // 옅은 도화 (절제된 혈색)
+
+// ── 상태 ────────────────────────────────────────────────────────────────
+let W,H,t=0, reduceMotion=false;
+let dayPhase=0.64;                  // 0 새벽 ~ 1 황혼
+let soft, grain;                    // 운무 스프라이트, 종이 그레인
+let mountains=[], cranes=[], petals=[], motes=[], pine=[], blooms=[];
+let pavilion=null;
+let px=0, py=0;                     // 시차 보간
+const WATER=0.80;                   // 수면 y 비율
+
+// 드래그/탭 판별
+let pressX=0, pressY=0, pressT=0, dragging=false, dayAtPress=0.64;
+
+// 제발(한시)
+const verse={ active:false, loading:false, fromAI:false,
+  hanja:[], korean:'', alpha:0, revealAt:0, error:'' };
+let lastSummon=-9999;
+
+// API 실패 대비 — 직접 지은 한시(유명 고시 인용 아님)
+const FALLBACK=[
+  {hanja:['山虛雲自閑','鶴歸日已斜'],korean:'산이 비어 구름 절로 한가하고 / 학이 돌아오니 해는 이미 기우네'},
+  {hanja:['霧散孤峰出','仙蹤杳難尋'],korean:'안개 흩어지자 외론 봉우리 드러나고 / 신선의 자취 아득해 찾기 어렵네'},
+  {hanja:['松下無人問','一聲鶴破煙'],korean:'솔 아래 묻는 이 하나 없는데 / 한 울음에 학이 안개를 가르네'},
+  {hanja:['桃花隨水去','不到世間人'],korean:'복사꽃 물 따라 흘러가도 / 세상 사람에겐 닿지 않네'},
+  {hanja:['日薄千山靜','風生兩袖寒'],korean:'해 엷으니 온 산이 고요하고 / 바람 일자 두 소매가 차갑네'},
+];
+
+// ── 셋업 ────────────────────────────────────────────────────────────────
+function setup(){
+  W=windowWidth; H=windowHeight;
+  const c=createCanvas(W,H);
+  c.elt.addEventListener('contextmenu',e=>e.preventDefault());
+  reduceMotion = window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  soft  = makeSoftCircle(256,[244,239,225]);
+  grain = makeGrain(360);
+  buildScene();
+}
+
+function buildScene(){
+  // 산 5겹 — 농담·텍스처 붓질 미리 계산
+  mountains=[];
+  for(let i=0;i<5;i++){
+    const f=i/4;
+    const m={
+      seed:random(1000),
+      baseY:H*(0.34+0.16*f),
+      amp:H*(0.05+0.13*f),
+      step:0.0008+0.0012*f,
+      col:INK[i], depth:f,
+      parX:0.008+0.05*f, parY:0.003+0.016*f,
+      strokes:[],
+    };
+    // 준법 텍스처: 능선 따라 짧은 사선들 (정적 → 시드로 고정)
+    randomSeed(m.seed*7);
+    const N=Math.floor(40+90*f);
+    for(let k=0;k<N;k++){
+      const xr=random(); const yr=Math.pow(random(),0.6); // 아래로 갈수록 밀집
+      m.strokes.push({ xr, yr, len:random(0.4,1.2), ang:random(-0.5,-1.1), a:random(0.04,0.13) });
+    }
+    randomSeed();
+    mountains.push(m);
+  }
+
+  // 정자 — 두 번째로 가까운 능선, 해 반대쪽으로 배치
+  pavilion = { mi:3, xr: 0.30, lift: H*0.02 };
+
+  // 학 — 깊이 계층(원경은 작고 옅게)
+  cranes=[];
+  for(let i=0;i<6;i++){
+    const z=random();                 // 0 원 ~ 1 근
+    cranes.push({
+      x:random(W), y:H*random(0.16,0.42), z,
+      s:lerp(12,30,z),
+      sp:lerp(0.10,0.34,z)*(random()<0.5?1:-1),
+      phase:random(TWO_PI), wob:random(0.6,1.1),
+      flapPh:random(TWO_PI), flapSp:random(0.9,1.4),
+    });
+  }
+  cranes.sort((a,b)=>a.z-b.z);
+
+  // 도화 꽃잎
+  petals=[];
+  for(let i=0;i<16;i++) petals.push(newPetal(true));
+
+  // 상서로운 금빛 티끌 (해 곁에서 피어오름)
+  motes=[];
+  for(let i=0;i<24;i++) motes.push({
+    a:random(TWO_PI), r:random(0.2,1), sp:random(0.001,0.004),
+    rise:random(0.2,0.7), seed:random(1000), tw:random(0.5,1.5),
+  });
+
+  // 근경 소나무
+  pine=buildPine();
+  blooms=[];
+}
+
+function newPetal(spread){
+  return {
+    x: spread? random(W) : random(-40, W*0.2),
+    y: spread? random(H*WATER) : random(-40,0),
+    s: random(6,13), rot:random(TWO_PI), vr:random(-0.03,0.03),
+    vy: random(0.25,0.7), sway:random(0.5,1.4), ph:random(TWO_PI),
+    z: random(0.4,1),
+  };
+}
+
+function windowResized(){ W=windowWidth;H=windowHeight;resizeCanvas(W,H);buildScene(); }
+
+// ── 현재 시각의 보간 팔레트 ─────────────────────────────────────────────
+function pal(){
+  const p=constrain(dayPhase,0,1)*2; // 0..2
+  const i=Math.min(1,Math.floor(p)); const f=p-i;
+  const a=KF[i], b=KF[i+1];
+  return {
+    skyTop:lerpC(a.skyTop,b.skyTop,f), skyBot:lerpC(a.skyBot,b.skyBot,f),
+    sun:lerpC(a.sun,b.sun,f), glow:lerpC(a.glow,b.glow,f),
+    mist:lerpC(a.mist,b.mist,f), water:lerpC(a.water,b.water,f),
+    gold:lerp(a.gold,b.gold,f),
+  };
+}
+function sunPos(){
+  const x=lerp(W*0.20,W*0.80,dayPhase);
+  const y=H*0.52 - Math.sin(dayPhase*PI)*H*0.30;
+  return {x,y};
+}
+
+// ── 메인 루프 ────────────────────────────────────────────────────────────
+function draw(){
+  t += reduceMotion?0.003:0.0065;
+  const P=pal(), S=sunPos();
+
+  const tx=(mouseX-W/2)/(W/2), ty=(mouseY-H/2)/(H/2);
+  px=lerp(px,constrain(tx,-1,1),0.05);
+  py=lerp(py,constrain(ty,-1,1),0.05);
+
+  // ── 상단 장면(수면 위)만 클립 ──
+  const ctx=drawingContext;
+  ctx.save(); ctx.beginPath(); ctx.rect(0,0,W,H*WATER); ctx.clip();
+  drawSky(P);
+  drawSun(P,S);
+  drawMotes(P,S);
+  drawMountains(P,S);
+  drawPavilion(P);
+  drawForegroundMist(P);
+  drawCranes();
+  ctx.restore();
+
+  // ── 수면(반영) ──
+  drawWater(P,S);
+
+  // ── 전경 ──
+  drawPetals();
+  drawForegroundPine(P);
+  drawBlooms();
+  drawInscription(P);
+  drawGrain();
+  drawVignette();
+  drawHints(P);
+}
+
+// ── 하늘 ──────────────────────────────────────────────────────────────────
+function drawSky(P){
+  const ctx=drawingContext;
+  const g=ctx.createLinearGradient(0,0,0,H*WATER);
+  g.addColorStop(0,rgb(P.skyTop));
+  g.addColorStop(0.7,rgb(P.skyBot));
+  g.addColorStop(1,rgb(shade(P.skyBot,-12)));
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H*WATER);
+}
+
+// ── 해 + 햇무리 ─────────────────────────────────────────────────────────
+function drawSun(P,S){
+  const breathe=reduceMotion?1:(1+0.025*Math.sin(t*0.8));
+  const R=Math.min(W,H)*0.46*breathe;
+  const sx=S.x - px*22, sy=S.y - py*14;
+  const ctx=drawingContext;
+  const g=ctx.createRadialGradient(sx,sy,0,sx,sy,R);
+  g.addColorStop(0.00,rgba(P.sun,0.96));
+  g.addColorStop(0.08,rgba(P.glow,0.78));
+  g.addColorStop(0.30,rgba(P.glow,0.30));
+  g.addColorStop(1.00,rgba(P.glow,0.0));
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H*WATER);
+
+  // 옅은 광망(가는 빛살)
+  push(); blendMode(SCREEN);
+  stroke(rgbaArr(P.glow,0.10)); strokeWeight(1.5);
+  const rays=18;
+  for(let i=0;i<rays;i++){
+    const a=t*0.05 + i*TWO_PI/rays;
+    const r0=R*0.16, r1=R*(0.5+0.12*Math.sin(t*0.7+i));
+    line(sx+Math.cos(a)*r0, sy+Math.sin(a)*r0, sx+Math.cos(a)*r1, sy+Math.sin(a)*r1);
+  }
+  blendMode(BLEND); pop();
+
+  noStroke();
+  fill(rgbaArr(P.sun,0.45)); ellipse(sx,sy,R*0.30,R*0.30);
+  fill(rgbaArr(P.sun,0.35)); ellipse(sx,sy,R*0.18,R*0.18);
+  S._sx=sx; S._sy=sy; S._R=R;
+}
+
+// ── 금빛 상서로운 티끌 ──────────────────────────────────────────────────
+function drawMotes(P,S){
+  push(); blendMode(SCREEN);
+  noStroke();
+  const sx=S._sx, sy=S._sy, R=S._R;
+  for(const m of motes){
+    m.a += m.sp*(reduceMotion?0.3:1);
+    const orbit=R*(0.18+0.30*m.r);
+    const rise=(t*m.rise*30)% (R*0.9);
+    const x=sx + Math.cos(m.a)*orbit + (noise(m.seed,t*0.2)-0.5)*40;
+    const y=sy + Math.sin(m.a)*orbit*0.6 - rise*0.4;
+    const tw=0.4+0.6*Math.abs(Math.sin(t*m.tw+m.seed));
+    fill(255, 224, 150, 110*tw*P.gold);
+    const s=1.5+2.5*m.r;
+    ellipse(x,y,s,s);
+    fill(255,240,200,60*tw*P.gold); ellipse(x,y,s*2.4,s*2.4);
+  }
+  blendMode(BLEND); pop();
+}
+
+// ── 산(농담 + 준법 텍스처, 곱셈 블렌딩) ────────────────────────────────
+function ridgeY(m,x,offX,offY){
+  const nx=(x+offX)*m.step;
+  const n=noise(nx,m.seed)+0.32*noise(nx*2.4,m.seed+9)+0.12*noise(nx*5.1,m.seed+21);
+  return m.baseY+offY - map(n,0,1.44,m.amp,-m.amp);
+}
+function drawMountains(P,S){
+  for(let i=0;i<mountains.length;i++){
+    const m=mountains[i];
+    const offX=px*(W*m.parX), offY=py*(H*m.parY);
+
+    // 본체(세로 농담): 위는 옅고 아래는 짙게 — 곱셈
+    push(); blendMode(MULTIPLY);
+    const ctx=drawingContext;
+    // 능선 최고점 추정용
+    let topY=H;
+    const step=6, verts=[];
+    for(let x=-40;x<=W+40;x+=step){ const y=ridgeY(m,x,offX,offY); verts.push([x,y]); if(y<topY)topY=y; }
+    const warm=lerpC(m.col, [m.col[0]+14,m.col[1]+4,m.col[2]-6], P.gold*0.5);
+    const g=ctx.createLinearGradient(0,topY,0,H*WATER);
+    g.addColorStop(0,rgba(shade(warm,30),0.78));
+    g.addColorStop(0.5,rgba(warm,0.92));
+    g.addColorStop(1,rgba(shade(warm,-22),0.96));
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.moveTo(-40,H+40);
+    for(const v of verts) ctx.lineTo(v[0],v[1]);
+    ctx.lineTo(W+40,H+40); ctx.closePath(); ctx.fill();
+
+    // 준법 텍스처 붓질
+    ctx.lineCap='round';
+    for(const s of m.strokes){
+      const x=-40+(W+80)*s.xr;
+      const ry=ridgeY(m,x,offX,offY);
+      const y=lerp(ry,H*WATER,s.yr);
+      if(y<ry) continue;
+      const len=(m.amp*0.5)*s.len*(0.5+s.yr);
+      ctx.strokeStyle=rgba(shade(warm,-30),s.a);
+      ctx.lineWidth=1+1.6*m.depth;
+      ctx.beginPath();
+      ctx.moveTo(x,y);
+      ctx.lineTo(x+Math.cos(s.ang)*len*0.3, y+Math.sin(s.ang)*len);
+      ctx.stroke();
+    }
+    blendMode(BLEND); pop();
+
+    // 능선 빛 번짐(대기 원근) — 해 방향이 더 밝게
+    push(); blendMode(SCREEN);
+    noFill(); strokeWeight(1.3);
+    beginShape();
+    for(let xi=0;xi<verts.length;xi++){
+      const x=verts[xi][0], y=verts[xi][1];
+      const toSun=1-constrain(Math.abs(x-S._sx)/(W*0.6),0,1);
+      stroke(rgbaArr(P.glow, 0.16+0.30*toSun*(1-m.depth*0.5)));
+      vertex(x,y);
+    }
+    endShape();
+    blendMode(BLEND); pop();
+
+    // 레이어 사이 운무 띠
+    drawMistBand(m, offX, offY, P);
+  }
+}
+
+function drawMistBand(m,offX,offY,P){
+  const yBase = m.baseY+offY - m.amp*0.1;
+  push();
+  for(let k=0;k<3;k++){
+    const seed=m.seed*3+k*17;
+    const drift=(t*(8+12*m.depth)) % (W+400);
+    const x = (-200 + drift) ;
+    const y = yBase + (noise(seed,t*0.2)-0.5)*H*0.04 + k*H*0.018;
+    const a = (30+30*(1-m.depth)) * (0.7+0.3*Math.sin(t+seed));
+    tint(P.mist[0],P.mist[1],P.mist[2], a);
+    imageMode(CENTER);
+    image(soft, x, y, W*0.9, H*0.14);
+    image(soft, x-W*0.55, y+H*0.01, W*0.8, H*0.12);
+  }
+  noTint(); pop();
+}
+
+// ── 정자(亭子) + 불빛 ──────────────────────────────────────────────────
+function drawPavilion(P){
+  const m=mountains[pavilion.mi];
+  const offX=px*(W*m.parX), offY=py*(H*m.parY);
+  const x=-40+(W+80)*pavilion.xr;
+  const groundY=ridgeY(m,x,offX,offY)+pavilion.lift;
+  const s=Math.min(W,H)*0.026;
+
+  push(); translate(x,groundY);
+  stroke(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],235); strokeWeight(Math.max(1,s*0.10)); noFill();
+  // 기둥
+  line(-s*0.7,0,-s*0.7,-s*1.1); line(s*0.7,0,s*0.7,-s*1.1);
+  line(-s*0.35,0,-s*0.35,-s*1.1); line(s*0.35,0,s*0.35,-s*1.1);
+  // 난간
+  line(-s*0.85,0,s*0.85,0); line(-s*0.85,-s*0.35,s*0.85,-s*0.35);
+  // 처마(살짝 들린 곡선) — 2단
+  fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],235); noStroke();
+  roof(s, -s*1.1, 1.0);
+  roof(s*0.78, -s*1.7, 0.85);
+  // 첨탑
+  stroke(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],235); strokeWeight(Math.max(1,s*0.08));
+  line(0,-s*2.05,0,-s*2.35);
+  // 따뜻한 불빛
+  noStroke();
+  const glow=0.6+0.4*Math.sin(t*1.6);
+  fill(255,206,120, 90*glow); ellipse(0,-s*0.55,s*1.6,s*1.2);
+  fill(255,224,160,150*glow); ellipse(0,-s*0.55,s*0.7,s*0.6);
+  pop();
+}
+function roof(s,y,scl){
+  push(); translate(0,y);
+  beginShape();
+  vertex(-s*1.15*scl, 0);
+  quadraticVertexC(-s*1.5*scl,-s*0.1, -s*0.95*scl,-s*0.22);
+  quadraticVertexC(-s*0.4*scl,-s*0.5, 0,-s*0.52);
+  quadraticVertexC(s*0.4*scl,-s*0.5, s*0.95*scl,-s*0.22);
+  quadraticVertexC(s*1.5*scl,-s*0.1, s*1.15*scl,0);
+  endShape(CLOSE);
+  pop();
+}
+function quadraticVertexC(cx,cy,x,y){ quadraticVertex(cx,cy,x,y); }
+
+// ── 수면 위 전경 운무 띠 ────────────────────────────────────────────────
+function drawForegroundMist(P){
+  push();
+  for(let k=0;k<4;k++){
+    const drift=(t*(20+8*k)) % (W+500);
+    const y=H*(0.58+0.05*k) + (noise(99+k,t*0.25)-0.5)*H*0.03;
+    const a=(34+10*k)*(0.7+0.3*Math.sin(t*0.9+k));
+    tint(P.mist[0],P.mist[1],P.mist[2],a);
+    imageMode(CENTER);
+    image(soft, -250+drift, y, W*1.1, H*0.16);
+    image(soft, -250+drift-W*0.6, y, W*0.9, H*0.14);
+  }
+  noTint(); pop();
+}
+
+// ── 학 ───────────────────────────────────────────────────────────────────
+function drawCranes(){
+  for(const c of cranes){
+    if(!reduceMotion) c.x += c.sp;
+    if(c.x<-70) c.x=W+70; if(c.x>W+70) c.x=-70;
+    const y=c.y + Math.sin(t*c.wob+c.phase)*H*0.012;
+    const flap=Math.sin(t*6*c.flapSp + c.flapPh);
+    drawCrane(c.x - px*30*c.z, y - py*16*c.z, c.s, flap, c.sp>=0?1:-1, c.z);
+  }
+}
+function drawCrane(x,y,s,flap,dir,z){
+  const fade=lerp(0.55,1,z);
+  push(); translate(x,y); scale(dir,1);
+  const wing=map(flap,-1,1,-0.5,0.72);
+  // 다리
+  stroke(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],230*fade); strokeWeight(s*0.05);
+  line(-s*0.2,s*0.06,-s*1.1,s*0.3); line(-s*0.05,s*0.07,-s*0.95,s*0.36);
+  noStroke();
+  // 꼬리/몸통
+  fill(36,40,44,225*fade); triangle(-s*0.45,-s*0.05,-s*1.05,-s*0.18,-s*1.0,s*0.12);
+  fill(249,247,242,250*fade); ellipse(0,0,s*1.05,s*0.5);
+  // 목 S + 머리 + 볏 + 부리
+  noFill(); stroke(249,247,242,250*fade); strokeWeight(s*0.16);
+  beginShape(); vertex(s*0.35,-s*0.02);
+  bezierVertex(s*0.62,-s*0.22,s*0.72,-s*0.5,s*0.95,-s*0.66); endShape();
+  noStroke(); fill(249,247,242,250*fade); ellipse(s*0.97,-s*0.68,s*0.2,s*0.2);
+  fill(VERMILION[0],VERMILION[1],VERMILION[2],240*fade); ellipse(s*0.97,-s*0.75,s*0.1,s*0.1);
+  fill(34,38,42,240*fade); triangle(s*1.05,-s*0.7,s*1.34,-s*0.66,s*1.05,-s*0.62);
+  // 위 날개(검정 끝)
+  fill(251,249,244,250*fade);
+  push(); rotate(wing);
+  beginShape(); vertex(0,0);
+  bezierVertex(-s*0.2,-s*0.5,-s*0.7,-s*0.88,-s*1.28,-s*0.72);
+  bezierVertex(-s*0.7,-s*0.4,-s*0.4,-s*0.18,0,0); endShape(CLOSE);
+  fill(34,38,42,225*fade); ellipse(-s*1.2,-s*0.72,s*0.24,s*0.16);
+  pop();
+  // 아래 날개
+  fill(244,242,237,235*fade);
+  push(); rotate(wing*0.45+0.16);
+  beginShape(); vertex(0,0);
+  bezierVertex(-s*0.2,s*0.35,-s*0.66,s*0.56,-s*1.06,s*0.4);
+  bezierVertex(-s*0.6,s*0.22,-s*0.35,s*0.1,0,0); endShape(CLOSE);
+  pop();
+  pop();
+}
+
+// ── 수면 + 반영 ──────────────────────────────────────────────────────────
+function drawWater(P,S){
+  const ctx=drawingContext;
+  const wy=H*WATER;
+  // 물빛 바탕
+  const g=ctx.createLinearGradient(0,wy,0,H);
+  g.addColorStop(0,rgba(shade(P.water,12),0.96));
+  g.addColorStop(1,rgba(shade(P.water,-18),1));
+  ctx.fillStyle=g; ctx.fillRect(0,wy,W,H-wy);
+
+  ctx.save(); ctx.beginPath(); ctx.rect(0,wy,W,H-wy); ctx.clip();
+
+  // 산 반영(뒤집고 잔물결)
+  push(); blendMode(MULTIPLY);
+  for(let i=mountains.length-1;i>=0;i--){
+    const m=mountains[i];
+    const offX=px*(W*m.parX), offY=py*(H*m.parY);
+    const a=0.10+0.06*(1-m.depth);
+    fill(rgbaArr(shade(m.col,-6),a)); noStroke();
+    beginShape();
+    for(let x=-40;x<=W+40;x+=8){
+      const ry=ridgeY(m,x,offX,offY);
+      const refl=wy + (wy-ry);
+      const wob=Math.sin(x*0.03 + t*1.4)*3 + Math.sin(x*0.011 - t*0.8)*5;
+      vertex(x+wob, refl);
+    }
+    vertex(W+40,H); vertex(-40,H);
+    endShape(CLOSE);
+  }
+  blendMode(BLEND); pop();
+
+  // 해 윤슬(금빛 일렁임)
+  push(); blendMode(SCREEN);
+  const colX=S._sx;
+  noStroke();
+  for(let yy=wy; yy<H; yy+=4){
+    const f=(yy-wy)/(H-wy);
+    const w=lerp(S._R*0.10, S._R*0.5, f) * (0.6+0.4*Math.sin(yy*0.25+t*3));
+    const a=lerp(0.22,0.0,f)* (0.6+0.4*Math.abs(Math.sin(yy*0.4+t*2)));
+    fill(P.sun[0],P.sun[1],P.sun[2], 255*a*(0.5+P.gold));
+    const jx=Math.sin(yy*0.08+t*2.2)*8;
+    rect(colX-w/2+jx, yy, w, 3);
+  }
+  blendMode(BLEND); pop();
+
+  // 수평 빛줄기 몇 가닥
+  push(); blendMode(SCREEN);
+  stroke(rgbaArr(P.glow,0.10)); strokeWeight(1);
+  for(let k=0;k<6;k++){
+    const yy=wy + (H-wy)*((k+0.5)/6) + Math.sin(t+k)*3;
+    line(0,yy,W,yy);
+  }
+  blendMode(BLEND); pop();
+
+  ctx.restore();
+}
+
+// ── 도화 꽃잎 ────────────────────────────────────────────────────────────
+function drawPetals(){
+  const wind=(mouseX-W/2)/W * 2.2;
+  push(); noStroke();
+  for(const p of petals){
+    if(!reduceMotion){
+      p.y += p.vy*p.z;
+      p.x += (wind*p.z) + Math.sin(t*p.sway+p.ph)*0.6;
+      p.rot += p.vr;
+    }
+    if(p.y>H*WATER+10 || p.x<-30 || p.x>W+30){ Object.assign(p,newPetal(false)); }
+    const s=p.s*p.z;
+    push(); translate(p.x,p.y); rotate(p.rot);
+    // 꽃잎: 끝이 살짝 패인 형태
+    fill(BLOSSOM[0],BLOSSOM[1],BLOSSOM[2], 210*p.z);
+    beginShape();
+    vertex(0,-s*0.5);
+    bezierVertex(s*0.5,-s*0.4, s*0.5,s*0.3, 0,s*0.5);
+    bezierVertex(-s*0.5,s*0.3, -s*0.5,-s*0.4, 0,-s*0.5);
+    endShape();
+    fill(214,170,170,120*p.z); ellipse(0,s*0.12,s*0.5,s*0.3);
+    pop();
+  }
+  pop();
+}
+
+// ── 근경 소나무 ─────────────────────────────────────────────────────────
+function buildPine(){
+  const pts=[]; let x=W*1.02,y=H*1.02,ang=-2.45;
+  randomSeed(42);
+  for(let i=0;i<28;i++){
+    x+=Math.cos(ang)*(W*0.017); y+=Math.sin(ang)*(W*0.017);
+    ang+=random(-0.12,0.06);
+    pts.push({x,y,w:map(i,0,28,W*0.013,W*0.002),needle:i>6&&i%2===0});
+  }
+  randomSeed();
+  return pts;
+}
+function drawForegroundPine(P){
+  noFill(); stroke(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],235);
+  for(let i=1;i<pine.length;i++){ strokeWeight(pine[i].w); line(pine[i-1].x,pine[i-1].y,pine[i].x,pine[i].y); }
+  for(const p of pine){
+    if(!p.needle) continue;
+    stroke(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],150); strokeWeight(1.1);
+    const sway=reduceMotion?0:Math.sin(t*1.2+p.x*0.02)*0.06;
+    for(let k=-3;k<=3;k++){
+      const a=-PI*0.62+k*0.16+sway, len=W*0.022;
+      line(p.x,p.y,p.x+Math.cos(a)*len,p.y+Math.sin(a)*len);
+    }
+  }
+  noStroke();
+}
+
+// ── 클릭 시 먹 번짐 ─────────────────────────────────────────────────────
+function drawBlooms(){
+  push();
+  for(let i=blooms.length-1;i>=0;i--){
+    const b=blooms[i]; b.r+=b.vr; b.a-=0.012;
+    if(b.a<=0){ blooms.splice(i,1); continue; }
+    noStroke(); fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2], 60*b.a);
+    ellipse(b.x,b.y,b.r,b.r*0.9);
+    noFill(); stroke(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2], 40*b.a); strokeWeight(1);
+    ellipse(b.x,b.y,b.r*1.3,b.r*1.15);
+  }
+  noStroke(); pop();
+}
+
+// ── 제발(한시) + 낙관 ──────────────────────────────────────────────────
+function drawInscription(P){
+  const target=(verse.active||verse.loading)?255:0;
+  verse.alpha=lerp(verse.alpha,target,0.08);
+  if(verse.alpha<2 && !verse.loading) return;
+  const a=verse.alpha/255;
+
+  if(verse.loading){
+    push(); textFont('Noto Serif KR'); textAlign(LEFT,TOP);
+    textSize(Math.min(W,H)*0.026);
+    fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],180*a);
+    const dots='·'.repeat(1+Math.floor((t*2)%3));
+    text('신선이 시를 읊는 중 '+dots, W*0.08, H*0.12);
+    pop(); return;
+  }
+
+  const topY=H*0.155, lineH=Math.min(W,H)*0.068, colGap=lineH*1.28;
+  push(); textFont('Ma Shan Zheng'); textAlign(CENTER,CENTER);
+  let gi=0;
+  for(let li=0;li<verse.hanja.length;li++){
+    const colX=W*0.105 + (verse.hanja.length-1-li)*colGap;
+    const chars=[...verse.hanja[li]];
+    for(let ci=0;ci<chars.length;ci++){
+      // 글자별 붓 내려긋듯 순차 등장
+      const elapsed=millis()-verse.revealAt - gi*95;
+      const ca=constrain(elapsed/420,0,1);
+      gi++;
+      if(ca<=0) continue;
+      const rise=(1-ca)*10;
+      textSize(lineH*0.98);
+      fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2], 235*ca*a);
+      text(chars[ci], colX, topY+ci*lineH+rise);
+    }
+  }
+  pop();
+
+  // 낙관
+  drawSeal(W*0.097, topY+5.1*lineH, lineH*0.84, a);
+
+  // 한글 풀이 + 출처
+  push(); textFont('Noto Serif KR'); textAlign(CENTER,BOTTOM);
+  textSize(Math.min(W,H)*0.022);
+  fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],160*a);
+  text(verse.korean, W/2, H-H*0.052, W*0.86);
+  textSize(Math.min(W,H)*0.014);
+  fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],105*a);
+  text(verse.fromAI?'— 신선의 즉흥 (Claude)':(verse.error?'— 옛 시첩에서 ('+verse.error+')':'— 옛 시첩에서'),
+       W/2, H-H*0.024);
+  pop();
+}
+function drawSeal(x,y,s,a){
+  push(); translate(x,y); rectMode(CENTER);
+  noStroke(); fill(VERMILION[0],VERMILION[1],VERMILION[2],225*a);
+  rect(0,0,s,s,s*0.10);
+  noFill(); stroke(255,236,228,180*a); strokeWeight(Math.max(1,s*0.05));
+  rect(0,0,s*0.82,s*0.82,s*0.06);
+  noStroke(); fill(218,196,170,235*a);
+  textFont('Ma Shan Zheng'); textAlign(CENTER,CENTER); textSize(s*0.62);
+  text('仙',0,s*0.04);
+  // 돌 인장의 풍화 자국
+  fill(VERMILION[0],VERMILION[1],VERMILION[2],225*a);
+  for(let i=0;i<4;i++) ellipse(random(-s*0.4,s*0.4),random(-s*0.4,s*0.4),s*0.06,s*0.06);
+  rectMode(CORNER); pop();
+}
+
+// ── 종이 그레인 / 비네트 ────────────────────────────────────────────────
+function drawGrain(){ push(); blendMode(MULTIPLY); tint(255,18); imageMode(CORNER);
+  for(let y=0;y<H;y+=360) for(let x=0;x<W;x+=360) image(grain,x,y,360,360);
+  noTint(); blendMode(BLEND); pop(); }
+function drawVignette(){ const ctx=drawingContext;
+  const g=ctx.createRadialGradient(W/2,H*0.45,Math.min(W,H)*0.3,W/2,H*0.5,Math.max(W,H)*0.75);
+  g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(40,34,26,0.22)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
+
+// ── 안내 ────────────────────────────────────────────────────────────────
+function drawHints(P){
+  push(); textFont('Noto Serif KR');
+  // 시간 라벨(좌하)
+  textAlign(LEFT,BOTTOM); textSize(Math.min(W,H)*0.016);
+  const lab = dayPhase<0.33?'새벽':dayPhase<0.66?'한낮':'황혼';
+  fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],110);
+  text('▲▼ 끌어 시간을 옮기세요   ·   지금은 '+lab, W*0.04, H-H*0.035);
+  // 클릭 안내(우하)
+  if(!verse.active && !verse.loading){
+    textAlign(RIGHT,BOTTOM); textSize(Math.min(W,H)*0.018);
+    const pulse=0.5+0.25*Math.sin(t*1.4);
+    fill(INK_DEEP[0],INK_DEEP[1],INK_DEEP[2],130*pulse);
+    text('화면을 누르면 신선이 시를 읊습니다', W-W*0.04, H-H*0.035);
+  }
+  pop();
+}
+
+// ── 입력: 드래그=시간, 탭=한시 ─────────────────────────────────────────
+function mousePressed(){ pressX=mouseX;pressY=mouseY;pressT=millis();dragging=false;dayAtPress=dayPhase; }
+function mouseDragged(){
+  if(Math.abs(mouseY-pressY)>6) dragging=true;
+  if(dragging) dayPhase=constrain(dayAtPress - (mouseY-pressY)/(H*0.9),0,1);
+}
+function mouseReleased(){
+  const moved=Math.hypot(mouseX-pressX,mouseY-pressY);
+  const quick=millis()-pressT<450;
+  if(!dragging && moved<8 && quick) tap(mouseX,mouseY);
+}
+function touchStarted(){ mousePressed(); return false; }
+function touchMoved(){ mouseDragged(); return false; }
+function touchEnded(){ mouseReleased(); return false; }
+
+function tap(x,y){
+  if(millis()-lastSummon<600) return;
+  lastSummon=millis();
+  blooms.push({x,y,r:8,vr:1.6,a:1});
+  for(const p of petals){ p.vy*=1.4; }
+  if(cranes.length){ const c=random(cranes); c.x=x;c.y=y;c.sp=(x<W/2)?Math.abs(c.sp):-Math.abs(c.sp); }
+  summonVerse();
+}
+
+async function summonVerse(){
+  verse.loading=true; verse.active=false; verse.error='';
+  const lab = dayPhase<0.33?'새벽 안개 속':dayPhase<0.66?'한낮의 맑은 빛 아래':'황혼이 물드는 하늘 아래';
+  const sys =
+    '너는 구름 속에 사는 신선이다. 흐릿한 해, 첩첩 수묵 산, 피어오르는 운무, 백학, 복사꽃, ' +
+    '물에 비친 풍경을 보고 짧은 한시 한 수를 읊는다. 5언 또는 7언 두 구(두 줄)로 고요하고 ' +
+    '그윽하게 짓되, 유명한 옛 시구를 그대로 베끼지 말고 새로 지어라. 반드시 아래 JSON 형식만 ' +
+    '출력한다. 마크다운·설명·백틱 금지.\n' +
+    '{"hanja":["○○○○○","○○○○○"],"korean":"첫 구 뜻 / 둘째 구 뜻"}';
+  const usr = '지금은 '+lab+'. 한시 한 수를 청합니다.';
+
+  let got=null;
+  try{
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ model:'claude-sonnet-4-6', max_tokens:1000,
+        system:sys, messages:[{role:'user',content:usr}] }),
+    });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    const txt=(data.content||[]).map(b=>b.type==='text'?b.text:'').join('').trim();
+    const clean=txt.replace(/```json|```/g,'').trim();
+    const s=clean.indexOf('{'), e=clean.lastIndexOf('}');
+    const parsed=JSON.parse(clean.slice(s,e+1));
+    if(Array.isArray(parsed.hanja)&&parsed.hanja.length>=1&&
+       parsed.hanja.every(v=>typeof v==='string'&&v.length))
+      got={hanja:parsed.hanja.slice(0,3),korean:parsed.korean||'',ai:true};
+  }catch(err){ verse.error='API 연결 안 됨'; }
+
+  if(!got){ const f=FALLBACK[Math.floor(random(FALLBACK.length))]; got={hanja:f.hanja,korean:f.korean,ai:false}; }
+  verse.hanja=got.hanja; verse.korean=got.korean; verse.fromAI=got.ai;
+  verse.loading=false; verse.active=true; verse.revealAt=millis();
+}
+
+// ── 유틸 ────────────────────────────────────────────────────────────────
+function makeSoftCircle(size,col){
+  const g=createGraphics(size,size); const ctx=g.drawingContext;
+  const grd=ctx.createRadialGradient(size/2,size/2,0,size/2,size/2,size/2);
+  grd.addColorStop(0,rgba(col,0.95)); grd.addColorStop(0.45,rgba(col,0.5)); grd.addColorStop(1,rgba(col,0));
+  ctx.fillStyle=grd; ctx.fillRect(0,0,size,size); return g;
+}
+function makeGrain(size){
+  const g=createGraphics(size,size); g.loadPixels();
+  for(let i=0;i<g.pixels.length;i+=4){ const v=200+Math.random()*55;
+    g.pixels[i]=v; g.pixels[i+1]=v; g.pixels[i+2]=v; g.pixels[i+3]=255; }
+  g.updatePixels(); return g;
+}
+function rgb(c){ return `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`; }
+function rgba(c,a){ return `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`; }
+function rgbaArr(c,a){ return color(c[0],c[1],c[2],a*255); }
+function shade(c,d){ return [constrain(c[0]+d,0,255),constrain(c[1]+d,0,255),constrain(c[2]+d,0,255)]; }
+function lerpC(a,b,f){ return [lerp(a[0],b[0],f),lerp(a[1],b[1],f),lerp(a[2],b[2],f)]; }
+</script>
+</body>
+</html>
